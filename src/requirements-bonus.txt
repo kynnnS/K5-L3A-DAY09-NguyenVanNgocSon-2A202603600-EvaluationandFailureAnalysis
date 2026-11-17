@@ -1,0 +1,2 @@
+# Bonus only (not used by CI): Inspect AI port of the Lab 9 graders, see docs/bonus_inspect.md
+inspect_ai==0.3.290
