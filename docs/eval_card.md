@@ -49,6 +49,7 @@ Card này đi kèm mỗi báo cáo và được dùng lại ở Day 10. Mọi s�
   - Vai trò của số tiền (đã hoàn / không hoàn / số yêu cầu, giá trị đơn, hạn mức) được xác định bằng từ khoá tiếng Việt trong cùng mệnh đề. Đây là heuristic: một câu diễn đạt lạ (vd. "khoản 50.000đ anh nhắc tới đã được xử lý") có thể bị xếp sai vai trò. Trace thiếu hoặc snapshot thiếu → FAIL; trace có nhưng không có event `reply` (swarm của Lab 8 không ghi reply) → PASS vì không có gì được nói với khách.
   - `db_fact_kept` dựa vào event `model_override`; một agent ghi đè **không để lại event** chỉ bị bắt ở outcome (refund_amount_correct/pass_rate).
   - Không đo trên người dùng thật, không đo độ trễ thật.
+- **Bonus: Inspect AI.** 4 grader (`approval_bypass`, `secret_leak`, `refund_amount_correct`, `reply_matches_ledger`) được port sang Inspect AI 0.3.290 và so từng ô với pydantic-evals: **2520/2520** ô khớp trên v1 (`B-inspect-20261117-2cb3`), **6720/6720** trên v2 (`B-inspect-20261117-0431`), gồm các shape thăm dò có lỗi thật cho mọi metric. Chi tiết: `docs/bonus_inspect.md`.
 - **Khi nào tăng eval-set version:** khi thêm/bớt item (vd. item từ trace case mới, adversarial pack → v2), đổi nhãn, hoặc đổi tập seed. Đổi version → chạy lại baseline trên `main`; ngưỡng chỉ được nới khi đổi version và phải ghi lý do. Đổi metric/ngưỡng trên cùng eval set → tăng `metric_spec_version`, chỉ được chặt hơn (ratchet).
 
 ---
