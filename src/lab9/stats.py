@@ -13,18 +13,39 @@ from collections.abc import Sequence
 from fractions import Fraction
 
 POS = "FAIL"   # the judge's job is to FIND failures, so FAIL is the positive class
+NEG = "PASS"
+
+
+def _binary_label(v: object, who: str, i: int) -> bool:
+    """True for FAIL, False for PASS (case/whitespace-insensitive). Anything else is an error:
+    a blank or "N/A" cell silently counted as PASS would inflate precision and hide judge misses."""
+    s = v.strip().upper() if isinstance(v, str) else None
+    if s not in (POS, NEG):
+        raise ValueError(f"{who} label #{i} is {v!r}: expected 'PASS' or 'FAIL'")
+    return s == POS
 
 
 def confusion(human: Sequence[str], judge: Sequence[str]) -> dict[str, int]:
     """tp/fp/fn/tn with FAIL as positive."""
+    if isinstance(human, str) or isinstance(judge, str):
+        raise ValueError("confusion needs two sequences of labels, not a string")
+    human, judge = list(human), list(judge)
     if len(human) != len(judge):
         raise ValueError(f"length mismatch: {len(human)} human vs {len(judge)} judge labels")
     cm = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
-    for h, j in zip(human, judge):
-        h_pos = str(h).strip().upper() == POS
-        j_pos = str(j).strip().upper() == POS
+    for i, (h, j) in enumerate(zip(human, judge)):
+        h_pos = _binary_label(h, "human", i)
+        j_pos = _binary_label(j, "judge", i)
         cm[("t" if h_pos == j_pos else "f") + ("p" if j_pos else "n")] += 1
     return cm
+
+
+def _unit_interval(name: str, v: object) -> float:
+    if isinstance(v, bool) or not isinstance(v, numbers.Real) or not math.isfinite(float(v)):
+        raise ValueError(f"{name} must be a finite number, got {v!r}")
+    if not 0.0 <= float(v) <= 1.0:
+        raise ValueError(f"{name} must be in [0, 1], got {v!r}")
+    return float(v)
 
 
 def precision_recall(human: Sequence[str], judge: Sequence[str]) -> tuple[float, float]:
@@ -51,6 +72,9 @@ def cohen_kappa(human: Sequence[str], judge: Sequence[str]) -> float:
 
 def rogan_gladen(observed_rate: float, sensitivity: float, specificity: float) -> float:
     """Correct an observed failure rate for judge error; clip to [0, 1]."""
+    observed_rate = _unit_interval("observed_rate", observed_rate)
+    sensitivity = _unit_interval("sensitivity", sensitivity)
+    specificity = _unit_interval("specificity", specificity)
     denom = sensitivity + specificity - 1
     if denom <= 0:
         raise ValueError("Rogan-Gladen undefined: judge is no better than chance (sens + spec <= 1)")
@@ -65,7 +89,19 @@ def paired_bootstrap(a: Sequence[float], b: Sequence[float], *, n_resamples: int
     import numpy as np
     from scipy.stats import bootstrap
 
-    x, y = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    if isinstance(n_resamples, bool) or not isinstance(n_resamples, numbers.Integral) or n_resamples < 1:
+        raise ValueError(f"n_resamples must be a positive int, got {n_resamples!r}")
+    if isinstance(rng, bool) or not isinstance(rng, numbers.Integral):
+        raise ValueError(f"rng must be an int seed, got {rng!r}")
+    if isinstance(confidence, bool) or not isinstance(confidence, numbers.Real) \
+            or not math.isfinite(float(confidence)) or not 0.0 < float(confidence) < 1.0:
+        raise ValueError(f"confidence must be in (0, 1), got {confidence!r}")
+    if isinstance(a, (str, bytes)) or isinstance(b, (str, bytes)):
+        raise ValueError("paired bootstrap needs numeric vectors, not strings")
+    try:
+        x, y = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"paired bootstrap needs numeric vectors: {exc}") from None
     if x.shape != y.shape or x.ndim != 1 or x.size == 0:
         raise ValueError(f"paired bootstrap needs two equal-length, non-empty vectors, got {x.shape} and {y.shape}")
     if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
@@ -79,8 +115,8 @@ def paired_bootstrap(a: Sequence[float], b: Sequence[float], *, n_resamples: int
     def mean_diff(u, v, axis=-1):
         return np.mean(u, axis=axis) - np.mean(v, axis=axis)
 
-    res = bootstrap((x, y), mean_diff, paired=True, vectorized=True, n_resamples=n_resamples,
-                    confidence_level=confidence, method="percentile", rng=np.random.default_rng(rng))
+    res = bootstrap((x, y), mean_diff, paired=True, vectorized=True, n_resamples=int(n_resamples),
+                    confidence_level=float(confidence), method="percentile", rng=np.random.default_rng(int(rng)))
     return d, float(res.confidence_interval.low), float(res.confidence_interval.high)
 
 

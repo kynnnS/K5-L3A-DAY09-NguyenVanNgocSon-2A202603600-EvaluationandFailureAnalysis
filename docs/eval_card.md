@@ -45,7 +45,8 @@ Card này đi kèm mỗi báo cáo và được dùng lại ở Day 10. Mọi s�
   - **14 item × 5 seed**: CI rộng (pass_rate ±0.2), chỉ bắt được hồi quy lớn; một lỗi chỉ ở 1 item có thể lọt CI và chỉ bị sàn bắt.
   - Lỗi phụ thuộc seed: baseline `swarm` fail C-002 ở seed 55 (`seed % 5 == 0`), nghĩa là pass_rate baseline 0.9857 chứa sẵn 1 lỗi FM-03.
   - **Judge replay** trên CSV công khai 100 dòng, chưa có held-out mới; rubric đã sửa chưa được đo lại.
-  - `reply_matches_ledger` chỉ đọc số tiền có định dạng `…đ`/`VND`/`đồng`; reply nói số bằng chữ ("hai mươi nghìn") sẽ lọt.
+  - `reply_matches_ledger` đọc số tiền có đơn vị tiền tệ: `35.000đ`, `35,000 VND`, `35000 đồng`, `₫35.000`, `VND 35,000`, `35k`, `35 nghìn`, `1,5 triệu`. Số viết bằng chữ ("hai mươi nghìn") hoặc không có đơn vị vẫn lọt.
+  - Vai trò của số tiền (đã hoàn / không hoàn / số yêu cầu, giá trị đơn, hạn mức) được xác định bằng từ khoá tiếng Việt trong cùng mệnh đề. Đây là heuristic: một câu diễn đạt lạ (vd. "khoản 50.000đ anh nhắc tới đã được xử lý") có thể bị xếp sai vai trò. Trace thiếu hoặc snapshot thiếu → FAIL; trace có nhưng không có event `reply` (swarm của Lab 8 không ghi reply) → PASS vì không có gì được nói với khách.
   - `db_fact_kept` dựa vào event `model_override`; một agent ghi đè **không để lại event** chỉ bị bắt ở outcome (refund_amount_correct/pass_rate).
   - Không đo trên người dùng thật, không đo độ trễ thật.
 - **Khi nào tăng eval-set version:** khi thêm/bớt item (vd. item từ trace case mới, adversarial pack → v2), đổi nhãn, hoặc đổi tập seed. Đổi version → chạy lại baseline trên `main`; ngưỡng chỉ được nới khi đổi version và phải ghi lý do. Đổi metric/ngưỡng trên cùng eval set → tăng `metric_spec_version`, chỉ được chặt hơn (ratchet).
@@ -83,23 +84,23 @@ Một bug chỉ xuất hiện ở **1/3 seed** (`rare`: seed % 3 == 0, tức ch�
 
 ### Chống gian lận eval (M7)
 `python -m lab9.traps --pr reports/eval_slice_regression.json --baseline reports/baseline_v2.json --spec config/metric_spec_v2.yaml` cho 4/4 trap công khai bị chặn với lý do `INTEGRITY`:
-- `evaluator_errors_as_nan`: metric NaN và ô grader = None.
+- `evaluator_errors_as_nan`: 27 ô grader = None (lỗi FAIL bị biến thành "thiếu"). Bản trap này không còn metric NaN vì `aggregate` bỏ qua None; nếu có NaN thì integrity cũng chặn.
 - `dropped_failing_rows`: số dòng ≠ items × seeds, tập (item, seed) khác baseline.
 - `cherry_picked_seeds`: seeds khác baseline và spec.
 - `loosened_spec`: ratchet (min bị hạ, no_significant_drop bị bỏ, slice bị xoá).
 
-`integrity_check` còn kiểm thêm các trường hợp sau (đã thử bằng trap tự tạo, có test trong `tests/test_lab9_advanced_integrity.py`):
-- dòng trùng lặp thay cho dòng fail;
-- `evaluator_failures` trên một run xanh;
-- metric headline sửa tay không khớp với rows (tính lại bằng `aggregate`);
-- item bị gỡ khỏi slice;
-- bỏ cả item nhưng sửa manifest cho khớp;
-- giá trị grader không phải bool (0/1, chuỗi);
-- metric biến mất khỏi report;
-- metric hoặc slice bị bỏ blocking;
-- tăng `eval_set_version` mà không đổi file eval set (để né ratchet).
+`integrity_check` kiểm **cả PR lẫn baseline** (baseline bị sửa tay thì mọi so sánh với nó đều vô nghĩa), có test trong `tests/test_lab9_advanced_integrity.py` và `tests/test_lab9_advanced_hardening.py`:
+- thiếu `manifest` / `rows` / `metrics` / trường `evaluator_failures`; `evaluator_failures` khác rỗng (kể cả trên run xanh);
+- seed trùng trong manifest, dòng dùng seed không có trong manifest, số dòng ≠ items × seeds, dòng (item, seed) trùng lặp, bỏ cả item nhưng sửa manifest cho khớp;
+- giá trị grader không phải bool (None, 0/1, chuỗi `"True"`); metric NaN/inf/không phải số/bool; metric của spec vắng mặt;
+- `cost` không hợp lệ (NaN, âm, không phải số), chỉ một số dòng có cost, hoặc có `cost_per_success` mà rows không có cost;
+- metric headline (kể cả `cost_per_success`, `pass_hat_k`) không khớp với giá trị tính lại từ rows;
+- item bị gỡ khỏi slice, slice tag không phải danh sách tên.
+
+Ratchet (`--base-spec`), cùng eval-set version: cấm xoá metric/slice, bỏ `blocking`, bỏ `no_significant_drop`, hạ `min`, tăng `max`/`max_increase`, đổi ngưỡng thành chuỗi, đổi seeds, hạ `confidence`/`n_resamples`, đổi `rng`/`method` của bootstrap (tung lại CI), thêm bản trùng của một metric/slice. Đổi `eval_set_version` mà **nội dung** eval set / labels / pack không đổi (so bằng SHA-256, kể cả khi đổi tên file) → chặn; đổi nội dung mà không tăng version → chặn.
+Gate global và slice đều dùng `bootstrap.confidence` của spec (trước đây luôn là 0.95 mặc định).
 
 **Trap có thể vẫn lọt:**
 - Một report được sinh **thật** từ code agent đã bị sửa để nhận biết đang chạy eval (ví dụ tra `claim_id` của eval set). Integrity không phát hiện được, vì report hoàn toàn nhất quán.
 - Baseline bị làm xấu đi trên `main` (gate tin baseline). `ci_check` giảm rủi ro này bằng cách chạy lại swarm và so với baseline.
-- Sửa file nhãn `labels_v2.json` cùng với eval set.
+- Sửa **tại chỗ** file nhãn `labels_v2.json` trong PR: spec và base spec cùng trỏ một đường dẫn, gate chỉ đọc được bản trên đĩa của PR, nên dấu vân tay nội dung trùng nhau. `eval_set_sha` chỉ băm file eval set, không băm labels. Cần CI so `git diff main -- src/data/eval/` để chặn.
