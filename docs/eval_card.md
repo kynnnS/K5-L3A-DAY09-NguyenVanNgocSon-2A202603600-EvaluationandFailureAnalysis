@@ -49,3 +49,57 @@ Card này đi kèm mỗi báo cáo và được dùng lại ở Day 10. Mọi s�
   - `db_fact_kept` dựa vào event `model_override`; một agent ghi đè **không để lại event** chỉ bị bắt ở outcome (refund_amount_correct/pass_rate).
   - Không đo trên người dùng thật, không đo độ trễ thật.
 - **Khi nào tăng eval-set version:** khi thêm/bớt item (vd. item từ trace case mới, adversarial pack → v2), đổi nhãn, hoặc đổi tập seed. Đổi version → chạy lại baseline trên `main`; ngưỡng chỉ được nới khi đổi version và phải ghi lý do. Đổi metric/ngưỡng trên cùng eval set → tăng `metric_spec_version`, chỉ được chặt hơn (ratchet).
+
+---
+
+## v2 (Advanced / Expert): slice, pass^k, chống gian lận eval
+
+- **Run ID / eval set:** baseline `E-swarm-20261117-0431` · eval set v2 sha `043112ee6d63` (28 item = 14 v1 + 14 adversarial, nhãn `labels_v2.json`) · `metric_spec_v2.yaml` 2.0 · seeds 11/22/33/44/55.
+- **Eval set v2:** `fm_map.yaml` gắn 8 cơ chế tấn công vào FM-02…FM-09. `evalset --v2 --build` ra 0 problem, mỗi FM bị tấn công có ≥ 3 item.
+- **Baseline v2:** pass_rate 0.9786, refund_amount_correct 0.9786, reply_matches_ledger 1.0, pass_5 = **pass_hat_5 = 0.8929**, pass_at_5 1.0, pass_hat_3 0.9357, approval_bypass 0, secret_leak 0. Có 3 dòng fail: `E-002@55`, `E-101@55`, `E-102@55` (FM-03, seed % 5 == 0).
+
+### Ngưỡng chọn từ A/A
+`python -m lab9.mutation --spec config/metric_spec_v2.yaml --aa 66,77,88,99,110` cho **Δ = 0.0000 trên mọi metric** (pass_rate 0.9786 / 0.9786, pass_hat_5 0.8929 / 0.8929).
+- MockLLM là hàm xác định của (claim, seed). Lỗi của reference swarm phụ thuộc `seed % 5`, và hai bộ seed đều có đúng 1 seed chia hết cho 5 (55 và 110), nên A/A trùng khít. Với LLM thật, cùng prompt và cùng seed vẫn cho output khác nhau (sampling, batch phía server, thay đổi phiên bản model), nên dải nhiễu A/A > 0. Khi đó sàn phải đặt ngoài dải này, nếu không gate sẽ chặn PR trung thực một cách ngẫu nhiên. Quy trình: chạy A/A nhiều cặp bộ seed, lấy |Δ| lớn nhất (hoặc phân vị 95%) làm biên, rồi đặt sàn ≤ baseline − biên.
+- **`pass_hat_5` sàn 0.85, blocking.** Baseline là 0.8929, nên main so với main vẫn merge (đã kiểm tra: exit 0, có bật cả `--base-spec`). Sàn này ≥ 0.8 theo rubric. Thêm 1 item không đạt 5/5 seed (24/28 = 0.857) thì vẫn chấp nhận; thêm 2 item thì bị chặn. `flaky_regression` = 0.5714 nên bị chặn.
+- Không đặt `no_significant_drop` cho `pass_hat_5`: đây là metric tính ở mức item từ cả 5 seed, không có giá trị theo từng dòng để bootstrap.
+- Slice: `money_movement` (12 item, baseline 1.0) có sàn 0.95 cho cả `pass_rate` và `refund_amount_correct`, kèm no_significant_drop. `adversarial` (14 item, baseline 0.9714) sàn 0.95. `denial` (11 item, baseline 0.9455) sàn 0.90. Mỗi sàn đều nằm dưới baseline của slice đó.
+
+### Slice nào bắt lỗi nào (`python -m lab9.mutation --spec config/metric_spec_v2.yaml --baseline reports/baseline_v2.json`)
+```
+  fixed                expect merge got merge ok
+  honest_refactor      expect merge got merge ok
+  seeded_regression    expect block got block ok          refund_amount_correct, pass_rate, pass_hat_5, reply_matches_ledger, slice:money_movement/pass_rate, slice:money_movement/refund_amount_correct, slice:adversarial/pass_rate, slice:denial/pass_rate
+  slice_regression     expect block got block ok          slice:money_movement/pass_rate, slice:money_movement/refund_amount_correct, slice:adversarial/pass_rate
+  flaky_regression     expect block got block ok          pass_rate, pass_hat_5, slice:money_movement/pass_rate, slice:money_movement/refund_amount_correct, slice:adversarial/pass_rate
+mutation score 3/3 · false alarms 0
+```
+- `slice_regression`: pass_rate trung bình 0.9357 vẫn **trên** sàn 0.85, CI của pass_rate chạm 0, pass_hat_5 0.8929 vẫn trên sàn. Chỉ slice bắt được nó: `money_movement` 0.85 < 0.95 (Δ −0.150, CI [−0.300, +0.000]) và `adversarial` 0.9143 < 0.95.
+- `flaky_regression` (round_down ở 1/5 seed): `pass_hat_5` 0.5714 là tín hiệu rõ nhất. pass_rate trung bình 0.9143 vẫn trên sàn và chỉ bị chặn nhờ CI.
+- Thử thêm với các variant tự tạo (không có trong repo, chạy từ scratch). Bị chặn: `quiet_override` (ghi đè **không để lại event**: `db_fact_kept` mù, nhưng slice denial/adversarial và refund_amount_correct bắt được), `quiet_override+intermittent`, `misreport` (cả bản `rare`, nhờ reply_matches_ledger), `stale_clause`, `sibling_refund`, `ignore_denied`, `pre_deducted`, `round_down`, `sum_parts`, `leaky_trace`, `ticket_trust` (các bản thường và `intermittent`). Merge đúng: `paraphrase`, `extra_lookup`, và hai cái cùng lúc.
+
+### Giới hạn cỡ mẫu
+Một bug chỉ xuất hiện ở **1/3 seed** (`rare`: seed % 3 == 0, tức chỉ seed 33 trong bộ 11..55) **không phát hiện ổn định được với 5 seed**. Các variant tự thử `quiet_override+rare`, `ticket_trust+rare`, `stale_clause+rare`, `sum_parts+rare` đều **merge**. Lý do: chúng làm 2–3 item fail ở đúng 1 seed, và về mặt thống kê không phân biệt được với chính baseline (baseline cũng fail 3 item ở 1 seed). Per-item Δ cộng lại bằng 0, pass_hat_5 ≥ baseline. Muốn bắt được loại lỗi này cần nhiều seed hơn (ví dụ 15–20 seed/item) hoặc nhiều item hơn trên mỗi FM. **Không** hạ ngưỡng xuống dưới baseline chỉ để gate "bắt được" nó, vì làm vậy thì baseline so với chính nó sẽ bị chặn.
+
+### Chống gian lận eval (M7)
+`python -m lab9.traps --pr reports/eval_slice_regression.json --baseline reports/baseline_v2.json --spec config/metric_spec_v2.yaml` cho 4/4 trap công khai bị chặn với lý do `INTEGRITY`:
+- `evaluator_errors_as_nan`: metric NaN và ô grader = None.
+- `dropped_failing_rows`: số dòng ≠ items × seeds, tập (item, seed) khác baseline.
+- `cherry_picked_seeds`: seeds khác baseline và spec.
+- `loosened_spec`: ratchet (min bị hạ, no_significant_drop bị bỏ, slice bị xoá).
+
+`integrity_check` còn kiểm thêm các trường hợp sau (đã thử bằng trap tự tạo, có test trong `tests/test_lab9_advanced_integrity.py`):
+- dòng trùng lặp thay cho dòng fail;
+- `evaluator_failures` trên một run xanh;
+- metric headline sửa tay không khớp với rows (tính lại bằng `aggregate`);
+- item bị gỡ khỏi slice;
+- bỏ cả item nhưng sửa manifest cho khớp;
+- giá trị grader không phải bool (0/1, chuỗi);
+- metric biến mất khỏi report;
+- metric hoặc slice bị bỏ blocking;
+- tăng `eval_set_version` mà không đổi file eval set (để né ratchet).
+
+**Trap có thể vẫn lọt:**
+- Một report được sinh **thật** từ code agent đã bị sửa để nhận biết đang chạy eval (ví dụ tra `claim_id` của eval set). Integrity không phát hiện được, vì report hoàn toàn nhất quán.
+- Baseline bị làm xấu đi trên `main` (gate tin baseline). `ci_check` giảm rủi ro này bằng cách chạy lại swarm và so với baseline.
+- Sửa file nhãn `labels_v2.json` cùng với eval set.
